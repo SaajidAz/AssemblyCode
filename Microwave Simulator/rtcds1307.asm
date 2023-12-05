@@ -1,6 +1,5 @@
 ; ds1307.asm
 ;
-;  Created: 5/5/2017 4:43:07 PM
 ;   Author: Saajid Aziz
 .equ RTCADR           = 0xd0
 .equ SECONDS_REGISTER = 0x00
