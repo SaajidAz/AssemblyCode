@@ -1,0 +1,1726 @@
+gavrasm Gerd's AVR assembler version 5.0 (C)2021 by DG4FAC
+----------------------------------------------------------
+
+Path:        C:\Users\n01555756\Desktop\avr\Directory\
+Source file: CENG209F21.asm
+Hex file:    CENG209F21.hex
+Eeprom file: CENG209F21.eep
+Compiled:    04.12.2023, 18:04:34
+Pass:        2
+
+     1: ; Constants
+     2: 
+     3: ; Port Pins
+     4: .equ	LIGHT	= 7		; Door Light WHITE LED PORTD pin 7
+     5: .equ	TTABLE	= 6		; Turntable PORTD pin 6 PWM
+     6: .equ	BEEPER	= 5		; Beeper PORTD pin 5
+     7: .equ	CANCEL	= 4		; Cancel switch PORTD pin 4
+     8: .equ	DOOR	= 3		; Door latching switch PORTD pin 3
+     9: .equ	STSP	= 2		; Start/Stop switch PORTD pin 2
+    10: .equ	HEATER	= 0		; Heater RED LED PORTB pin 0
+    11: 
+    12: ; General Constants
+    13: .equ	CLOSED	= 0
+    14: .equ	OPEN	= 1
+    15: .equ	ON	= 1
+    16: .equ	OFF	= 0
+    17: .equ	YES	= 1
+    18: .equ	NO	= 0
+    19: .equ	JCTR	= 125	; Joystick centre value
+    20: 
+    21: ; States
+    22: .equ	STARTS		= 0
+    23: .equ	IDLES		= 1
+    24: .equ	DATAS		= 2
+    25: .equ	COOKS		= 3
+    26: .equ	SUSPENDS	= 4
+    27: 
+    28: 
+    29: 
+    30: 
+    31: ; Device constants
+    32: .nolist
+    35: 
+    36: ;           S R A M
+    37: .dseg
+    38: .org SRAM_START
+    39: cstate:	.byte 1			; Current State
+    40: inputs: 	.byte 1			; Current input settings
+    41: joyx:		.byte 1			; Raw joystick x-axis
+    42: joyy:		.byte 1			; Raw joystick y-axis
+    43: joys:		.byte 1			; Joystick status bits 0-not centred,1- centred
+    44: seconds:	.byte 2			; Cook time in seconds 16-bit
+    45: sec1:		.byte 1			; minor tick time (100 ms)
+    46: tascii: .byte 8
+    47: 
+    48: 
+    49: ;         C O D E
+    50: 	.cseg
+    51: 	.org 0x0000
+    52: 
+    53: 
+    54: 000000   940C  jmp	start
+        000001   0338
+    55: 
+    56: 
+    57: 
+    58: ; Start after interrupt vector table
+    59: 	.org	0xF6
+    60:   joymsg:		.db " Joystick X:Y ",0,0
+        0000F6 4A20 796F 7473 6369
+        0000FA 206B 3A58 2059 0000
+    61: cmsg1:	.db "Time: ",0,0
+        0000FE 6954 656D 203A 0000
+    62: cmsg2:	.db " Cook Time: ",0,0
+        000102 4320 6F6F 206B 6954
+        000106 656D 203A 0000
+    63: cmsg3:	.db " State: ",0,0
+        000109 5320 6174 6574 203A
+        00010D 0000
+    64: 
+    65: 
+    66: 
+    67: ; .asm include statements
+    68: .include "iopins.asm"
+  Including file iopins.asm
+
+     1: 
+     2: 
+     3: ; Port Initialization
+     4: initPorts:
+     5: 00010E   B18A  in		r24,DDRD		; Get the contents of DDRD
+     6: 00010F   6E80  ori		r24,0b11100000	; Set Port D pins 5,6,7 to outputs
+     7: 000110   B98A  out		DDRD,r24
+     8: 000111   B184  in		r24,DDRB		; Get the contents of DDRB
+     9: 000112   6083  ori		r24,0b00000011	; Set Port B pins 0,1 to output
+    10: 000113   B984  out		DDRB,r24
+    11: 000114   B18A  in		r24,DDRD
+    12: 000115   7E83  andi		r24,0b11100011	; Set Port D pins 2,3,4 to inputs
+    13: 000116   B98A  out		DDRD,r24
+    14: 000117   B18B  in		r24,PORTD		; Pull pins 2,3,4 high
+    15: 000118   618C  ori		r24,0b00011100
+    16: 000119   B98B  out		PORTD,r24
+    17: 
+    18: 
+    19: 
+    20:   ; Timer0 PWM Setup
+    21: ; TCCR0A - Timer/Counter Control Register A
+    22: ; Phase Correct PWM = WGM02-0,WGM01-0,WGM00 1, PWM TOP - 0xFF, Updates OCRx at TOP, TOV flag Set on Bottom
+    23: ; Compare Output Mode = COM0A1-1,COM0A0-0
+    24: 00011A   E801  ldi	r16,(1<<COM0A1) |(1<<WGM00)
+    25: 00011B   BD04  out	TCCR0A,r16 ; to timer control port A
+    26: 
+    27: ; TCCCR0B - Timer/Counter Control Register B
+    28: ; Prescaler = 1024 - CS02-1,CS01-0,CS00-1, Frequency 61 Hz - 16 mHz/1024/256
+    29: 00011C   E005  ldi	r16,(1<<CS02) | (1<<CS00)
+    30: 00011D   BD05  out	TCCR0B,r16
+    31: 00011E   E000  ldi	r16,0				; Load 0 count to initially turn off turntable
+    32: 00011F   BD07  out	OCR0A,r16
+    33: 
+    34: 000120   9508  ret
+    35: 
+  Continuing file CENG209F21.asm
+    69: .include "util.asm"
+  Including file util.asm
+
+     1: ;
+     2: ; util.asm
+     3: ;
+     4: ;  Created: 8/1/2017 12:09:45 PM
+     5: ;   Author: pmoggach
+     6: ;
+     7: .def ANSL = R0		;To hold low-byte of answer
+     8: .def ANSH = R1		;To hold high-byte of answer
+     9: .def REML = R2		;To hold low-byte of remainder
+    10: .def REMH = R3		;To hold high-byte of remainder
+    11: .def   AL = R16		;To hold low-byte of dividend
+    12: .def   AH = R17		;To hold high-byte of dividend
+    13: .def   BL = R18		;To hold low-byte of divisor
+    14: .def   BH = R19		;To hold high-byte of divisor
+    15: .def  C16 = R20		;Bit Counter
+    16: 
+    17: ; 100 ms Delay
+    18: delay100ms:
+    19: 000121   EF2F  ldi    r18, 0xFF    ; 255
+    20: 000122   EE81  ldi    r24, 0xE1    ; 225
+    21: 000123   E094  ldi    r25, 0x04    ;
+    22: d100:
+    23: 000124   5021  subi    r18, 0x01    ; 1
+    24: 000125   4080  sbci    r24, 0x00    ; 0
+    25: 000126   4090  sbci    r25, 0x00    ; 0
+    26: 000127   F7E1  brne    d100
+    27: 000128   9508  ret
+    28: 
+    29: 000129   9508  ret
+    30: 
+    31: pBCDToASCII:
+    32: 00012A   2F21  mov r18,r17
+    33: 00012B   702F  andi r18, 0x0F
+    34: 00012C   6320  ori r18, 0x30
+    35: 00012D   9512  swap r17
+    36: 00012E   701F  andi r17, 0x0F
+    37: 00012F   6310  ori r17,0x30
+    38: 000130   9508  ret
+    39: 
+    40: byteToHexASCII:
+    41: 000131   2F21  mov r18, r17
+    42: 000132   701F  andi r17, 0x0F
+    43: 000133   E300  ldi r16, 0x30
+    44: 000134   301A  cpi r17,10
+    45: 000135   F008  brlo b1
+    46: 000136   E307  ldi r16, 0x37
+    47: 000137   0F10  add r17,r16
+    48: 000138   9522  swap r18
+    49: 000139   702F  andi r18, 0x0F
+    50: 00013A   E300  ldi r16, 0x30
+    51: 00013B   302A  cpi r18, 10
+    52: 00013C   F008  brlo b2
+    53: 00013D   E307  ldi r16, 0x37
+    54: 00013E   0F20  add r18, r16
+    55: 00013F   9508  ret
+    56: 
+    57: ; Converts unsigned integer value of r17:r16 to ASCII string tascii[5]
+    58: itoa_short:
+    59: 000140   EAE4  ldi	zl,low(dectab*2)	; pointer to 10^x power compare value
+    60: 000141   E0F2  ldi	zh,high(dectab*2)
+    61: 000142   E0A8  ldi	xl,low(tascii)	; pointer to array to store string
+    62: 000143   E0B1  ldi	xh,high(tascii)
+    63: itoa_lext:
+    64: 000144   E22F  ldi	r18,'0'-1		; (ASCII 0) -1
+    65: 000145   9025  lpm	r2,z+			; load 10^x word, point to next
+    66: 000146   9035  lpm	r3,z+
+    67: itoa_lint:
+    68: 000147   9523  inc	r18			; start with '0' ASCII
+    69: 000148   1902  sub	r16,r2			; (## - 10^x
+    70: 000149   0913  sbc	r17,r3
+    71: 00014A   F7E0  brsh	itoa_lint
+    72: 00014B   0D02  add	r16,r2			; if negative reconstruct
+    73: 00014C   1D13  adc	r17,r3
+    74: 00014D   932D  st	x+,r18			; save 1/10^x count, point to next location to save
+    75: 00014E   95C8  lpm				; read last ZX pointed at from 10^x table in (r0)
+    76: 00014F   2000  tst	r0                  ; LAST WORD YET?=0x00
+    77: 000150   F799  brne	itoa_lext
+    78: 000151   9508  ret
+    79: 
+    80: dectab:	.dw	10000,1000,100,10,1,0
+        000152 2710 03E8 0064 000A 0001 0000
+    81: delay1s:
+    82: 000158   E440  ldi		r20,64
+    83: 000159   EC58  ldi		r21,200
+    84: 00015A   EF6A  ldi		r22,250
+    85: 00015B   0000  nop
+    86: 00015C   0000  nop
+    87: 00015D   956A  dec		r22
+    88: 00015E   F7E1  brne	d3
+    89: 00015F   955A  dec		r21
+    90: 000160   F7C9  brne	d2
+    91: 000161   954A  dec		r20
+    92: 000162   F7B1  brne	d1
+    93: 000163   9508  ret
+    94: 
+    95: div1616:
+    96: 000164   0108  movw	ANSH:ANSL,AH:AL	;Copy dividend into answer
+    97: 000165   E141  ldi	C16,17		;Load bit counter
+    98: 000166   1822  sub	REML,REML	;Clear Remainder and Carry
+    99: 000167   2433  clr	REMH
+   100: 000168   1C00  rol	ANSL		;Shift the answer to the left
+   101: 000169   1C11  rol	ANSH
+   102: 00016A   954A  dec	C16		;Decrement Counter
+   103: 00016B   F059  breq	ddone		;Exit if sixteen bits done
+   104: 00016C   1C22  rol	REML		;Shift remainder to the left
+   105: 00016D   1C33  rol	REMH
+   106: 00016E   1A22  sub	REML,BL		;Try to subtract divisor from remainder
+   107: 00016F   0A33  sbc	REMH,BH
+   108: 000170   F420  brcc	skip		;If the result was negative then
+   109: 000171   0E22  add	REML,BL		;reverse the subtraction to try again
+   110: 000172   1E33  adc	REMH,BH
+   111: 000173   9488  clc			;Clear Carry Flag so zero shifted into A
+   112: 000174   CFF3  rjmp	dloop		;Loop Back
+   113: 000175   9408  sec			;Set Carry Flag to be shifted into A
+   114: 000176   CFF1  rjmp	dloop
+   115: 000177   9508  ret
+   116: 
+   117: ; Divide two 8-bit numbers
+   118: ; r0 holds answer
+   119: ; r2 holds remainder
+   120: ; r16 holds dividend
+   121: ; r18 holds divisor
+   122: ; r20 Bit Counter
+   123: div88:
+   124: 000178   E049  ldi	r20,9	; Load bit counter
+   125: 000179   1822  sub	r2,r2	; Clear remainder and Carry
+   126: 00017A   2E00  mov	r0,r16	; Copy dividend to answer
+   127: loopd8:
+   128: 00017B   1C00  rol	r0	; Shift answer to left
+   129: 00017C   954A  dec	r20	; Decrement counter
+   130: 00017D   F041  breq	doned8	; Exit if eight bits done
+   131: 00017E   1C22  rol	r2	; Shift remainder to the left
+   132: 00017F   1A22  sub	r2,r18	; Try to subtract the divsor from remainder
+   133: 000180   F418  brcc	skipd8	; If result was negative then
+   134: 000181   0E22  add	r2,r18	; reverse subtraction to try again
+   135: 000182   9488  clc		; Clear Carry flag so zero shifted into A
+   136: 000183   CFF7  rjmp	loopd8
+   137: skipd8:
+   138: 000184   9408  sec		; Set Carry flag to be shifted into A
+   139: 000185   CFF5  rjmp	loopd8
+   140: doned8:
+   141: 000186   9508  ret
+   142: 
+  Continuing file CENG209F21.asm
+    70: .include "serialio.asm"
+  Including file serialio.asm
+
+     1: ; Initializes the USART0 to operate in asynchronous mode with baud rate set to
+     2: ; 9600. The USART0 is configured to transmit and receive 8-bit data.
+     3: initUSART0:
+     4: 000187   E040  ldi		r20,0		; set baud rate to 9600 with fOSC = 16MHz
+     5: 000188   9340  sts		UBRR0H,r20	; 	"
+        000189   00C5
+     6: 00018A   E647  ldi		r20,0x67	; 	"
+     7: 00018B   9340  sts		UBRR0L,r20	; 	"
+        00018C   00C4
+     8: 00018D   E148  ldi		r20,0x18	; enable transmitter(TXEN),receiver(RXEN),8-bit data
+     9: 00018E   9340  sts		UCSR0B,r20	; 	"
+        00018F   00C1
+    10: 000190   E046  ldi		r20,0x06	; asynchronous USART, disable parity
+    11: 000191   9340  sts		UCSR0C,r20	; 	"
+        000192   00C2
+    12: 000193   9508  ret
+    13: 
+    14: 
+    15: ; Outputs the character passed in r16 to MEGA device USART0
+    16: ; using the polling method. The character is less than 9 bits.
+    17: putchUSART0:
+    18: 000194   9140  lds		r20,UCSR0A		; make sure data register is empty before
+        000195   00C0
+    19: 000196   FF45  sbrs		r20,UDRE0		; outputting the character
+    20: 000197   CFFC  rjmp		putchUSART0		; 	"
+    21: 000198   9300  sts		UDR0,r16		; output the character (less than 9 bits)
+        000199   00C6
+    22: 00019A   9508  ret
+    23: 
+    24: ; Reads a character from the USART0 module of the MEGA device using
+    25: ; the polling method. The character is returned in r22.
+    26: getchUSART0:
+    27: 00019B   9140  lds		r20,UCSR0A		; is there any data to be read?
+        00019C   00C0
+    28: 00019D   FF47  sbrs		r20,RXC0		; 	"
+    29: 00019E   CFFC  rjmp		getchUSART0		; 	"
+    30: 00019F   9160  lds		r22,UDR0		; fetch the received character
+        0001A0   00C6
+    31: 0001A1   9508  ret
+    32: 
+    33: newline:
+    34: 0001A2   E00D  ldi r16,0x0D
+    35: 0001A3   940E  call putchUSART0
+        0001A4   0194
+    36: 0001A5   E00A  ldi r16,0x0A
+    37: 0001A6   940E  call putchUSART0
+        0001A7   0194
+    38: 0001A8   9508  ret
+    39: 
+    40: ; Outputs a string pointed to by Z to USART0. The string is stored in
+    41: ; program memory or data memory. r16 indicates if the string is in program memory (=1)
+    42: ; or data memory (=0).
+    43: putsUSART0:
+    44: 0001A9   3001  cpi		r16,1			; is string in program memory?
+    45: 0001AA   F029  breq		pstr			; 	"
+    46: dstr:
+    47: 0001AB   9101  ld		r16,z+			; string is in data memory
+    48: 0001AC   3000  cpi		r16,0
+    49: 0001AD   F039  breq		done			; reach the end of string?
+    50: 0001AE   DFE5  rcall		putchUSART0		; output the next character
+    51: 0001AF   CFFB  rjmp		dstr
+    52: pstr:
+    53: 0001B0   9105  lpm		r16,z+			; string is in program memory
+    54: 0001B1   3000  cpi		r16,0
+    55: 0001B2   F011  breq		done			; reach the end of string?
+    56: 0001B3   DFE0  rcall		putchUSART0		; output the next character
+    57: 0001B4   CFFB  rjmp		pstr
+    58: done:
+    59: 0001B5   9508  ret
+    60: 
+    61: ; Reads a string from the USART0 of the MEGA device using the polling
+    62: ; method by continuously calling putchUSART0 until the carriage return (CR) character is
+    63: ; encountered.  Register X points to the buffer that holds the received string.
+    64: getsUSART0:
+    65: 	.equ	enter = 0x0D
+    66: ragain:
+    67: 0001B6   940E  call		getchUSART0
+        0001B7   019B
+    68: 0001B8   306D  cpi		r22,enter		; is it an enter character?
+    69: 0001B9   F419  brne		cont
+    70: 0001BA   E030  ldi		r19,0
+    71: 0001BB   933C  st		X,r19			; terminate the string with a NULL character
+    72: 0001BC   9508  ret
+    73: cont:
+    74: 0001BD   936C  st		X,r22			; save the character in the buffer
+    75: 0001BE   2F06  mov		r16,r22		; copy r22 to r16
+    76: 0001BF   940E  call		putchUSART0		; echo the character to USART0
+        0001C0   0194
+    77: 0001C1   3068  cpi		r22,0x08		; is it a backspace character?
+    78: 0001C2   F449  brne		notBS
+    79: 0001C3   95AA  dec		XL			; decrement the X pointer
+    80: 0001C4   40B0  sbci		XH,0			; 	"
+    81: 0001C5   E200  ldi		r16,0x20		; output a space character
+    82: 0001C6   940E  call		putchUSART0 	; 	"
+        0001C7   0194
+    83: 0001C8   E008  ldi		r16,0x08		; output a backspace character
+    84: 0001C9   940E  call		putchUSART0		; 	"
+        0001CA   0194
+    85: 0001CB   CFEA  rjmp		ragain
+    86: notBS:
+    87: 0001CC   95A3  inc		XL			; increment X pointer
+    88: 0001CD   E040  ldi		r20,0			; 	"
+    89: 0001CE   1FB4  adc		XH,r20			; 	"
+    90: 0001CF   CFE6  rjmp		ragain
+    91: 0001D0   9508  ret
+  Continuing file CENG209F21.asm
+    71: .include "adc.asm"
+  Including file adc.asm
+
+     1: initADC:
+     2: 0001D1   E480  ldi		r24,1<<REFS0			; Sets the REFS0 to 1 for 5V vref
+     3: 0001D2   9380  sts		ADMUX,r24
+        0001D3   007C
+     4: 0001D4   E887  ldi		r24,0x87			; Enable ADC and select clock/128
+     5: 0001D5   9380  sts		ADCSRA,r24
+        0001D6   007A
+     6: 0001D7   9508  ret
+     7: ; Channel to read in r24,value returned in r24,r25
+     8: readADCch:
+     9: 0001D8   E7EC  ldi		r30,ADMUX
+    10: 0001D9   E0F0  ldi		r31,0x00
+    11: 0001DA   8190  ld		r25,Z
+    12: 0001DB   7087  andi		r24,0x07		; makes sure channel 0-7
+    13: 0001DC   7F98  andi		r25,0xF8		; clears bottom 3 bits before OR
+    14: 0001DD   2B89  or		r24,r25
+    15: 0001DE   8380  st		Z,r24
+    16: 0001DF   E7EA  ldi		r30,ADCSRA		; trigger the conversion.
+    17: 0001E0   E0F0  ldi		r31,0x00
+    18: 0001E1   8180  ld		r24,Z
+    19: 0001E2   6480  ori		r24,0x40
+    20: 0001E3   8380  st		Z,r24
+    21: poll:
+    22: 0001E4   8180  ld		r24,Z
+    23: 0001E5   FD86  sbrc		r24,6			; Loop until conversion complete
+    24: 0001E6   940C  jmp		poll
+        0001E7   01E4
+    25: 0001E8   9180  lds		r24,ADCL		; Read low and high byte
+        0001E9   0078
+    26: 0001EA   9190  lds		r25,ADCH
+        0001EB   0079
+    27: 0001EC   9508  ret
+    28: 
+    29: 
+  Continuing file CENG209F21.asm
+    72: .include "i2c.asm"
+  Including file i2c.asm
+
+     1: .equ F_SCL		= 100000	; I2C speed 100 KHz
+     2: .equ TWISTART		= 0xA4		; Start (TWINT,TWSTA,TWEN)
+     3: .equ TWISTOP		= 0x94		; Stop (TWINT,TWSTO,TWEN)
+     4: .equ TWIACK		= 0xC4		; Return ACK to slave
+     5: .equ TWINACK		= 0x84		; Don't ACK slave
+     6: .equ TWISEND		= 0x84		; Send data (TWINT,TWEN)
+     7: .equ TWIREADY		= TWCR & 0x80	; Ready when TWINT returns 1
+     8: .equ TWISTATUS	= TWSR & 0xF8	; Returns value of status register
+     9: 
+    10: ; I2C Initialization
+    11: ; at 16 MHz, the SCL frequency will be 16/(16+2(TWBR)), assuming prescalar of 0.
+    12: ; for 100KHz SCL, TWBR = ((F_CPU/F_SCL)-16)/2 = ((16/0.1)-16)/2 = 144/2 = 72.
+    13: initI2C:
+    14: 0001ED   E050  ldi		r21,0
+    15: 0001EE   9350  sts		TWSR,r21		; set prescaler bits to 0
+        0001EF   00B9
+    16: 0001F0   E458  ldi		r21,0x48		; 16 MHz CPU, 100 KHz TWI 72
+    17: 0001F1   9350  sts		TWBR,r21
+        0001F2   00B8
+    18: 0001F3   E054  ldi		r21,(1<<TWEN)
+    19: 0001F4   9350  sts		TWCR,r21		; Enable TWI
+        0001F5   00BC
+    20: 0001F6   9508  ret
+    21: 
+    22: ; Looks for device at specfied address passed in r23                                                     
+    23: i2cDetect:
+    24: 0001F7   EA44  ldi	r20,TWISTART		; Send Start
+    25: 0001F8   9340  sts	TWCR,r20
+        0001F9   00BC
+    26: 0001FA   EBEC  ldi	r30,TWCR
+    27: 0001FB   E0F0  ldi	r31,0x00
+    28: dt1:
+    29: 0001FC   8140  ld	r20,Z
+    30: 0001FD   2344  and	r20,r20
+    31: 0001FE   F7EC  brge	dt1
+    32: 0001FF   9370  sts	TWDR,r23
+        000200   00BB
+    33: 000201   E884  ldi	r24,TWISEND
+    34: 000202   9380  sts	TWCR,r24
+        000203   00BC
+    35: 000204   EBEC  ldi	r30,TWCR
+    36: 000205   E0F0  ldi	r31,0x00
+    37: dt2:	
+    38: 000206   8180  ld	r24,Z
+    39: 000207   2388  and	r24,r24
+    40: 000208   F7EC  brge	dt2
+    41: 000209   9140  lds	r20,TWSR
+        00020A   00B9
+    42: 00020B   7B48  andi	r20,TWISTATUS
+    43: 00020C   E081  ldi	r24,0x01
+    44: 00020D   3148  cpi	r20,0x18
+    45: 00020E   F009  breq	dt3
+    46: 00020F   E080  ldi	r24,0
+    47: dt3:
+    48: 000210   9508  ret
+    49: 
+    50: ; I2C Start Address in r23
+    51: i2cStart:
+    52: 000211   940E  call i2cDetect
+        000212   01F7
+    53: 000213   9508  ret
+    54: ; I2C Stop
+    55: i2cStop:
+    56: 000214   E984  ldi r24,TWISTOP
+    57: 000215   9380  sts TWCR,r24
+        000216   00BC
+    58: 000217   9508  ret
+    59: ; I2C Read
+    60: ; Data returned in r27
+    61: i2cRead:
+    62: 000218   E854  ldi	r21,(1<<TWINT) | (1<<TWEN)
+    63: 000219   9350  sts	TWCR,r21
+        00021A   00BC
+    64: wait2:
+    65: 00021B   9150  lds	r21,TWCR		; Read control register
+        00021C   00BC
+    66: 00021D   FF57  sbrs	r21,TWINT		; Wait until ready
+    67: 00021E   CFFC  rjmp	wait2
+    68: 00021F   91B0  lds	r27,TWDR		; Read data
+        000220   00BB
+    69: 000221   9508  ret
+    70: 
+    71: ; reads data byte from slave into r24
+    72: i2cReadACK:
+    73: 000222   EC84  ldi	r24,TWIACK	; ack = read more data
+    74: 000223   9380  sts	TWCR,r24
+        000224   00BC
+    75: 000225   EBEC  ldi	r30,TWCR
+    76: 000226   E0F0  ldi	r31,0x00
+    77: ra1:
+    78: 000227   8180  ld	r24,Z
+    79: 000228   2388  and	r24,r24
+    80: 000229   F7EC  brge	ra1
+    81: 00022A   9180  lds	r24,TWDR
+        00022B   00BB
+    82: 00022C   9508  ret
+    83: 
+    84: ; reads data byte from slave into r24
+    85: i2cReadNACK:
+    86: 00022D   E884  ldi	r24,TWINACK	; nack = not reading more data
+    87: 00022E   9380  sts	TWCR,r24
+        00022F   00BC
+    88: 000230   EBEC  ldi	r30,TWCR
+    89: 000231   E0F0  ldi	r31,0x00
+    90: rn1:
+    91: 000232   8180  ld	r24,Z
+    92: 000233   2388  and	r24,r24
+    93: 000234   F7EC  brge	rn1
+    94: 000235   9180  lds	r24,TWDR
+        000236   00BB
+    95: 000237   9508  ret
+    96: 
+    97: ; I2C Write
+    98: ; Data to write in r24
+    99: i2cWrite:
+   100: 000238   9380  sts	TWDR,r24	; Load data into TWDR register
+        000239   00BB
+   101: 00023A   E884  ldi	r24,TWISEND
+   102: 00023B   9380  sts	TWCR,r24	; Configure control register to send TWDR contents.
+        00023C   00BC
+   103: 00023D   EBCC  ldi	r28,TWCR
+   104: 00023E   E0D0  ldi	r29,0x00
+   105: wr1:
+   106: 00023F   8188  ld	r24,Y
+   107: 000240   2388  and	r24,r24
+   108: 000241   F7EC  brge	wr1
+   109: 000242   9140  lds	r20,TWSR
+        000243   00B9
+   110: 000244   E081  ldi	r24,0x01
+   111: 000245   3246  cpi	r20,0x26
+   112: 000246   F409  brne	wr2
+   113: 000247   E080  ldi	r24,0x00
+   114: wr2:
+   115: 000248   9508  ret
+   116: 
+   117: ; I2C Write Register
+   118: ; Bus Address in r23,Device Register in r25,Data in r22
+   119: i2cWriteRegister:
+   120: 000249   940E  call	i2cStart
+        00024A   0211
+   121: 00024B   2F89  mov	r24,r25
+   122: 00024C   940E  call	i2cWrite
+        00024D   0238
+   123: 00024E   2F86  mov	r24,r22
+   124: 00024F   940E  call	i2cWrite
+        000250   0238
+   125: 000251   940E  call	i2cStop
+        000252   0214
+   126: 000253   9508  ret
+   127: 
+   128: ; I2C Read Register
+   129: ; Bus address in r23, Device register in r25,
+   130: i2cReadRegister:
+   131: 000254   2F67  mov	r22,r23
+   132: 000255   940E  call	i2cStart
+        000256   0211
+   133: 000257   2F89  mov	r24,r25
+   134: 000258   940E  call	i2cWrite
+        000259   0238
+   135: 00025A   E071  ldi	r23,0x01	; Restart as a READ operation
+   136: 00025B   0F76  add	r23,r22
+   137: 00025C   940E  call	i2cStart
+        00025D   0211
+   138: 00025E   940E  call	i2cReadNACK
+        00025F   022D
+   139: 000260   2F68  mov	r22,r24
+   140: 000261   940E  call	i2cStop
+        000262   0214
+   141: 000263   2F86  mov	r24,r22
+   142: 000264   9508  ret
+   143: 
+   144: ; Write Multiple Bytes
+   145: ; Bus Address in r23,Device Register in r25, Address Pointer r16,r17
+   146: i2cWriteMulti:
+   147: 000265   940E  call	i2cStart
+        000266   0211
+   148: 000267   2F89  mov	r24,r25
+   149: 000268   940E  call	i2cWrite
+        000269   0238
+   150: 00026A   9720  sbiw	r28,0x00
+   151: 00026B   F039  breq	wm1
+   152: wm2:
+   153: 00026C   01F8  movw	r30,r16	; Set address in Z
+   154: 00026D   9181  ld	r24,Z+		; Get data then increment Z
+   155: 00026E   018F  movw	r16,r30	; Save Z register
+   156: 00026F   940E  call	i2cWrite	; Write data
+        000270   0238
+   157: 000271   9721  sbiw	r28,0x01	; Decrement byte count
+   158: 000272   F7C9  brne	wm2		; loop if not done
+   159: wm1:
+   160: 000273   940E  call i2cStop
+        000274   0214
+   161: 000275   9508  ret
+  Continuing file CENG209F21.asm
+    73: .include "rtcds1307.asm"
+  Including file rtcds1307.asm
+
+     1: ; ds1307.asm
+     2: ;
+     3: ;  Created: 5/5/2017 4:43:07 PM
+     4: ;   Author: pmoggach
+     5: .equ RTCADR           = 0xd0
+     6: .equ SECONDS_REGISTER = 0x00
+     7: .equ MINUTES_REGISTER = 0x01
+     8: .equ HOURS_REGISTER	  = 0x02
+     9: .equ DAYOFWK_REGISTER = 0x03
+    10: .equ DAYS_REGISTER    = 0x04
+    11: .equ MONTHS_REGISTER  = 0x05
+    12: .equ YEARS_REGISTER   = 0x06
+    13: .equ CONTROL_REGISTER = 0x07
+    14: .equ RAM_BEGIN        = 0x08
+    15: .equ RAM_END          = 0x3F
+    16: 
+    17: initDS1307:
+    18: 000276   ED70  ldi	r23,RTCADR		; RTC Setup
+    19: 000277   940E  call	i2cStart
+        000278   0211
+    20: 000279   ED70  ldi	r23,RTCADR		; Initialize DS1307
+    21: 00027A   E097  ldi	r25,CONTROL_REGISTER
+    22: 00027B   E060  ldi	r22,0x00
+    23: 00027C   940E  call	i2cWriteRegister
+        00027D   0249
+    24: 00027E   9508  ret
+    25: 
+    26: ; r23 RTC Address, r25 ds1307 Register, Return Data r24
+    27: ds1307GetDateTime:
+    28: 00027F   ED70  ldi	r23,RTCADR
+    29: 000280   940E  call	i2cReadRegister
+        000281   0254
+    30: 000282   9508  ret
+    31: 
+    32: ; Setting the RTC time to 16 hours, 58 minutes, 11 seconds
+    33: setDS1307:
+    34: 000283   ED70  ldi		r23,RTCADR
+    35: 000284   E097  ldi		r25,CONTROL_REGISTER
+    36: 000285   E060  ldi		r22,0x00
+    37: 000286   940E  call	i2cWriteRegister
+        000287   0249
+    38: 000288   ED70  ldi		r23,RTCADR
+    39: 000289   E092  ldi		r25,HOURS_REGISTER
+    40: 00028A   E166  ldi		r22,0x16
+    41: 00028B   940E  call	i2cWriteRegister
+        00028C   0249
+    42: 00028D   ED70  ldi		r23,RTCADR
+    43: 00028E   E091  ldi		r25,MINUTES_REGISTER
+    44: 00028F   E568  ldi		r22,0x58
+    45: 000290   940E  call	i2cWriteRegister
+        000291   0249
+    46: 000292   ED70  ldi		r23,RTCADR
+    47: 000293   E090  ldi		r25,SECONDS_REGISTER
+    48: 000294   E161  ldi		r22,0x11
+    49: 000295   940E  call	i2cWriteRegister
+        000296   0249
+    50: 000297   9508  ret
+  Continuing file CENG209F21.asm
+    74: .include "andisplay.asm"
+  Including file andisplay.asm
+
+     1: .equ ANI2CADR		= 0xe0
+     2: .equ ANON		= 0x21
+     3: .equ ANSTANDBY		= 0x20
+     4: .equ ANDISPON		= 0x81
+     5: .equ ANDISPOFF		= 0x80
+     6: .equ ANBLINKON		= 0x85
+     7: .equ ANBLINKOFF		= 0x81
+     8: .equ ANDIM		= 0xe5
+     9: .equ ANBLINKCMD		= 0x80
+    10: .equ ANBLINKDISPON	= 0x01
+    11: .equ ANBLINKROFF		= 0
+    12: .equ ANBLINK2HZ		= 1
+    13: .equ ANBLINK1HZ		= 2
+    14: .equ ANBLINKHHZ		= 3
+    15: .equ ANBRIGHTCMD		= 0xe0
+    16: 
+    17: 
+    18: ;	Alphanumeric Display Initialization
+    19: initAN:
+    20: 000298   EE70  ldi	r23,ANI2CADR		; HT16K33 I2C Address
+    21: 000299   940E  call	i2cStart
+        00029A   0211
+    22: 00029B   E281  ldi	r24,ANON
+    23: 00029C   940E  call	i2cWrite
+        00029D   0238
+    24: 00029E   940E  call	i2cStop
+        00029F   0214
+    25: 0002A0   940E  call	i2cStart
+        0002A1   0211
+    26: 0002A2   E881  ldi	r24,ANDISPON
+    27: 0002A3   940E  call	i2cWrite
+        0002A4   0238
+    28: 0002A5   940E  call	i2cStop
+        0002A6   0214
+    29: 0002A7   940E  call	i2cStart
+        0002A8   0211
+    30: 0002A9   EE85  ldi	r24,ANDIM
+    31: 0002AA   940E  call	i2cWrite
+        0002AB   0238
+    32: 0002AC   940E  call	i2cStop
+        0002AD   0214
+    33: 0002AE   E200  ldi	r16, ' '
+    34: 0002AF   E010  ldi	r17,0
+    35: 0002B0   940E  call	anWriteDigit
+        0002B1   02BF
+    36: 0002B2   E200  ldi	r16, ' '
+    37: 0002B3   E011  ldi	r17,1
+    38: 0002B4   940E  call	anWriteDigit
+        0002B5   02BF
+    39: 0002B6   E200  ldi	r16, ' '
+    40: 0002B7   E012  ldi	r17,2
+    41: 0002B8   940E  call	anWriteDigit
+        0002B9   02BF
+    42: 0002BA   E200  ldi	r16, ' '
+    43: 0002BB   E013  ldi	r17,3
+    44: 0002BC   940E  call	anWriteDigit
+        0002BD   02BF
+    45: 0002BE   9508  ret
+    46: 
+    47: 
+    48: 
+    49: 
+    50: ;	Write Digit - ASCII Character in r16, Digit to write in r17
+    51: anWriteDigit:
+    52: 0002BF   EBE0  ldi	ZL,LOW(alphatable*2)		; Low byte of alphatable address
+    53: 0002C0   E0F5  ldi	ZH,HIGH(alphatable*2)	; High byte
+    54: 0002C1   5200  subi	r16,' '
+    55: 0002C2   0F00  lsl	r16
+    56: 0002C3   0FE0  add	ZL,r16
+    57: 0002C4   E000  ldi	r16,0
+    58: 0002C5   1FF0  adc	ZH,r16
+    59: 0002C6   9125  lpm	r18,Z+
+    60: 0002C7   9134  lpm	r19,Z
+    61: 0002C8   EE70  ldi	r23,ANI2CADR	; HT16K33 I2C Address
+    62: 0002C9   940E  call	i2cStart
+        0002CA   0211
+    63: 0002CB   2F81  mov	r24,r17			; Get digit to write
+    64: 0002CC   0F88  add	r24,r24			; Set up digit register
+    65: 0002CD   940E  call	i2cWrite
+        0002CE   0238
+    66: 0002CF   2F82  mov	r24,r18
+    67: 0002D0   940E  call	i2cWrite
+        0002D1   0238
+    68: 0002D2   2F83  mov	r24,r19
+    69: 0002D3   940E  call	i2cWrite
+        0002D4   0238
+    70: 0002D5   940E  call	i2cStop
+        0002D6   0214
+    71: 0002D7   9508  ret
+    72: 
+    73: 
+    74: alphatable:
+    75: .dw 0b0000000000000000	; Blank  
+        0002D8 0000
+    76: .dw 0b0000000000000110	; !
+        0002D9 0006
+    77: .dw 0b0000001000100000	; "
+        0002DA 0220
+    78: .dw 0b0001001011001110	; #
+        0002DB 12CE
+    79: .dw 0b0001001011101101	; $
+        0002DC 12ED
+    80: .dw 0b0000110000100100	; %
+        0002DD 0C24
+    81: .dw 0b0010001101011101	; &
+        0002DE 235D
+    82: .dw 0b0000010000000000	; '
+        0002DF 0400
+    83: .dw 0b0010010000000000	; (
+        0002E0 2400
+    84: .dw 0b0000100100000000	; )
+        0002E1 0900
+    85: .dw 0b0011111111000000	; *
+        0002E2 3FC0
+    86: .dw 0b0001001011000000	; +
+        0002E3 12C0
+    87: .dw 0b0000100000000000	; ,
+        0002E4 0800
+    88: .dw 0b0000000011000000	; -
+        0002E5 00C0
+    89: .dw 0b0000000000000000	; .
+        0002E6 0000
+    90: .dw 0b0000110000000000	; /
+        0002E7 0C00
+    91: .dw 0b0000000000111111	; 0
+        0002E8 003F
+    92: .dw 0b0000000000000110	; 1
+        0002E9 0006
+    93: .dw 0b0000000011011011	; 2
+        0002EA 00DB
+    94: .dw 0b0000000011001111	; 3
+        0002EB 00CF
+    95: .dw 0b0000000011100110	; 4
+        0002EC 00E6
+    96: .dw 0b0000000011101101	; 5
+        0002ED 00ED
+    97: .dw 0b0000000011111101	; 6
+        0002EE 00FD
+    98: .dw 0b0000000000000111	; 7
+        0002EF 0007
+    99: .dw 0b0000000011111111	; 8
+        0002F0 00FF
+   100: .dw 0b0000000011101111	; 9
+        0002F1 00EF
+   101: .dw 0b0001001000000000	; :
+        0002F2 1200
+   102: .dw 0b0000101000000000	; ;
+        0002F3 0A00
+   103: .dw 0b0010010000000000	; <
+        0002F4 2400
+   104: .dw 0b0000000011001000	; =
+        0002F5 00C8
+   105: .dw 0b0000100100000000	; >
+        0002F6 0900
+   106: .dw 0b0001000010000011	; ?
+        0002F7 1083
+   107: .dw 0b0000001010111011	; @
+        0002F8 02BB
+   108: .dw 0b0000000011110111	; A
+        0002F9 00F7
+   109: .dw 0b0001001010001111	; B
+        0002FA 128F
+   110: .dw 0b0000000000111001	; C
+        0002FB 0039
+   111: .dw 0b0001001000001111	; D
+        0002FC 120F
+   112: .dw 0b0000000011111001	; E
+        0002FD 00F9
+   113: .dw 0b0000000001110001	; F
+        0002FE 0071
+   114: .dw 0b0000000010111101	; G
+        0002FF 00BD
+   115: .dw 0b0000000011110110	; H
+        000300 00F6
+   116: .dw 0b0001001000000000	; I
+        000301 1200
+   117: .dw 0b0000000000011110	; J
+        000302 001E
+   118: .dw 0b0010010001110000	; K
+        000303 2470
+   119: .dw 0b0000000000111000	; L
+        000304 0038
+   120: .dw 0b0000010100110110	; M
+        000305 0536
+   121: .dw 0b0010000100110110	; N
+        000306 2136
+   122: .dw 0b0000000000111111	; O
+        000307 003F
+   123: .dw 0b0000000011110011	; P
+        000308 00F3
+   124: .dw 0b0010000000111111	; Q
+        000309 203F
+   125: .dw 0b0010000011110011	; R
+        00030A 20F3
+   126: .dw 0b0000000011101101	; S
+        00030B 00ED
+   127: .dw 0b0001001000000001	; T
+        00030C 1201
+   128: .dw 0b0000000000111110	; U
+        00030D 003E
+   129: .dw 0b0000110000110000	; V
+        00030E 0C30
+   130: .dw 0b0010100000110110	; W
+        00030F 2836
+   131: .dw 0b0010110100000000	; X
+        000310 2D00
+   132: .dw 0b0001010100000000	; Y
+        000311 1500
+   133: .dw 0b0000110000001001	; Z
+        000312 0C09
+   134: .dw 0b0000000000111001	; [
+        000313 0039
+   135: .dw 0b0010000100000000	; 
+        000314 2100
+   136: .dw 0b0000000000001111	; ]
+        000315 000F
+   137: .dw 0b0000110000000011	; ^
+        000316 0C03
+   138: .dw 0b0000000000001000	; _
+        000317 0008
+   139: .dw 0b0000000100000000	; `
+        000318 0100
+   140: .dw 0b0001000001011000	; a
+        000319 1058
+   141: .dw 0b0010000001111000	; b
+        00031A 2078
+   142: .dw 0b0000000011011000	; c
+        00031B 00D8
+   143: .dw 0b0000100010001110	; d
+        00031C 088E
+   144: .dw 0b0000100001011000	; e
+        00031D 0858
+   145: .dw 0b0000000001110001	; f
+        00031E 0071
+   146: .dw 0b0000010010001110	; g
+        00031F 048E
+   147: .dw 0b0001000001110000	; h
+        000320 1070
+   148: .dw 0b0001000000000000	; i
+        000321 1000
+   149: .dw 0b0000000000001110	; j
+        000322 000E
+   150: .dw 0b0011011000000000	; k
+        000323 3600
+   151: .dw 0b0000000000110000	; l
+        000324 0030
+   152: .dw 0b0001000011010100	; m
+        000325 10D4
+   153: .dw 0b0001000001010000	; n
+        000326 1050
+   154: .dw 0b0000000011011100	; o
+        000327 00DC
+   155: .dw 0b0000000101110000	; p
+        000328 0170
+   156: .dw 0b0000010010000110	; q
+        000329 0486
+   157: .dw 0b0000000001010000	; r
+        00032A 0050
+   158: .dw 0b0010000010001000	; s
+        00032B 2088
+   159: .dw 0b0000000001111000	; t
+        00032C 0078
+   160: .dw 0b0000000000011100	; u
+        00032D 001C
+   161: .dw 0b0010000000000100	; v
+        00032E 2004
+   162: .dw 0b0010100000010100	; w
+        00032F 2814
+   163: .dw 0b0010100011000000	; x
+        000330 28C0
+   164: .dw 0b0010000000001100	; y
+        000331 200C
+   165: .dw 0b0000100001001000	; z
+        000332 0848
+   166: .dw 0b0000100101001001	; {
+        000333 0949
+   167: .dw 0b0001001000000000	; |
+        000334 1200
+   168: .dw 0b0010010010001001	; }
+        000335 2489
+   169: .dw 0b0000010100100000	; ~
+        000336 0520
+   170: .dw 0b0011111111111111	; All
+        000337 3FFF
+  Continuing file CENG209F21.asm
+    75: 
+    76: start:
+    77: 000338   E008  ldi	r16,HIGH(RAMEND)	; Initialize the stack pointer
+    78: 000339   BF0E  out	SPH,r16
+    79: 00033A   EF0F  ldi	r16,LOW(RAMEND)
+    80: 00033B   BF0D  out	SPL,r16
+    81: 00033C   940E  call initPorts
+        00033D   010E
+    82: 00033E   940E  call initUSART0
+        00033F   0187
+    83: 000340   940E  call initADC
+        000341   01D1
+    84: 000342   940E  call initI2C
+        000343   01ED
+    85: 000344   940E  call initDS1307
+        000345   0276
+    86: 000346   940E  call initAN
+        000347   0298
+    87: 000348   940C  jmp startstate
+        000349   036A
+    88: 
+    89: loop:
+    90: 00034A   940E  call	updateTick		; Check the time
+        00034B   03C9
+    91: ; Check the inputs here
+    92: 
+    93: 
+    94: 
+    95: ;	If Door Open jump to suspend
+    96: 00034C   9B4B  sbis	PIND,DOOR
+    97: 00034D   940C  jmp	suspend
+        00034E   0396
+    98: 00034F   985F  cbi PORTD, LIGHT
+    99: ;	Cancel Key Pressed  jump to idle
+   100: 000350   9B4C  sbis	PIND,CANCEL
+   101: 000351   940C  jmp	idle
+        000352   037C
+   102: 
+   103: ;	Start Stop Key Pressed
+   104: 000353   9100  lds r16, cstate
+        000354   0100
+   105: 000355   994A  sbic	PIND,STSP
+   106: 000356   940C  jmp	joy0				; If Start/Stop key not pressed loop
+        000357   0362
+   107: 
+   108: 
+   109: 000358   3003  cpi r16, COOKS
+   110: 000359   F1E1  breq suspend
+   111: 00035A   3001  cpi r16, IDLES
+   112: 00035B   F189  breq cook
+   113: 00035C   3004  cpi r16, SUSPENDS
+   114: 00035D   F179  breq cook
+   115: 00035E   3000  cpi r16, STARTS
+   116: 00035F   F169  breq cook
+   117: 
+   118: 000360   940C  jmp loop
+        000361   034A
+   119: 
+   120: 
+   121:    joy0:
+   122: 000362   940E  call joystickinputs
+        000363   03ED
+   123: 000364   3003  cpi r16, COOKS
+   124: 000365   F321  breq loop
+   125: 000366   3091  cpi r25, 1
+   126: 000367   F311  breq loop
+   127: 000368   940C  jmp dataentry
+        000369   039F
+   128: 
+   129: 
+   130:   ; When checking the Start/Stop key get the current state (cstate) in a register.
+   131:   ;If the Start/Stop key is not pressed jump to the top of the loop.
+   132:   ; If the Start/Stop key has been pressed and
+   133: 
+   134: 
+   135:   ;the current state is COOKS branch to suspend.
+   136: 
+   137:   ;the current state is IDLES,SUSPENDS, or temporarily STARTS branch to cook.
+   138: 
+   139:   ;otherwise loop.
+   140: 
+   141: 
+   142: 
+   143: 
+   144: 
+   145: 
+   146: startstate:				; start state tasks
+   147: 00036A   E080  ldi	r24,STARTS		; Start state
+   148: 00036B   9380  sts	cstate,r24
+        00036C   0100
+   149: 00036D   940E  call setDS1307
+        00036E   0283
+   150: 00036F   E000  ldi r16, 0
+   151: 000370   9300  sts seconds, r16
+        000371   0105
+   152: 000372   9300  sts seconds+1, r16
+        000373   0106
+   153: 000374   9300  sts sec1, r16
+        000375   0107
+   154: 
+   155: 000376   9858  cbi  PORTD, HEATER                    ;turn off heater and light
+   156: 000377   985F  cbi PORTD, LIGHT
+   157: 
+   158: 000378   E000  ldi r16, 0
+   159: 000379   BD07  out OCR0A, r16
+   160: 
+   161: 00037A   940C  jmp	loop
+        00037B   034A
+   162: 
+   163: idle:
+   164: 00037C   E081  ldi	r24,IDLES			; Set state variable to Idle
+   165: 00037D   9380  sts	cstate,r24
+        00037E   0100
+   166: 
+   167: 00037F   9858  cbi PORTD, HEATER                 ;<-heater off
+   168: 000380   985F  cbi PORTD, LIGHT                 ;<-light off
+   169: 000381   E000  ldi r16, 0
+   170: 000382   9300  sts seconds, r16
+        000383   0105
+   171: 000384   9300  sts seconds+1, r16                   ;<-seconds = 0
+        000385   0106
+   172: 
+   173: 000386   E000  ldi r16, 0
+   174: 000387   BD07  out OCR0A, r16
+   175: 000388   9A5D  sbi PORTD, BEEPER
+   176: 000389   940E  call delay100ms
+        00038A   0121
+   177: 
+   178: 
+   179: 00038B   940C  jmp	loop
+        00038C   034A
+   180: 
+   181: ; Cook State
+   182: 00038D   E083  ldi	r24,COOKS			; Set state variable to Cook
+   183: 00038E   9380  sts	cstate,r24			; Do cook state tasks
+        00038F   0100
+   184: 
+   185: 
+   186: 000390   9A58  sbi PORTD, HEATER                 ;turn on heater
+   187: 000391   985F  cbi PORTD, LIGHT                  ;turn off light
+   188: 
+   189: 000392   E203  ldi r16, 0x23
+   190: 000393   BD07  out OCR0A, r16
+   191: 000394   940C  jmp	loop
+        000395   034A
+   192: 
+   193: ; Suspend State
+   194: suspend:					; suspend state tasks
+   195: 000396   E084  ldi	r24,SUSPENDS			; Set state variable to Suspend
+   196: 000397   9380  sts	cstate,r24			; Do suspend state tasks
+        000398   0100
+   197: 
+   198: 
+   199: 000399   9858  cbi PORTD, HEATER                      ;turn off heater
+   200: 00039A   9A5F  sbi PORTD, LIGHT                      ;turn on light
+   201: 
+   202: 
+   203: 00039B   E000  ldi r16, 0
+   204: 00039C   BD07  out OCR0A, r16
+   205: 
+   206: 00039D   940C  jmp	loop
+        00039E   034A
+   207: 
+   208: dataentry:						; data entry state tasks
+   209: 00039F   E082  ldi	r24,DATAS			; Set state variable to Data Entry
+   210: 0003A0   9380  sts	cstate,r24
+        0003A1   0100
+   211: 0003A2   9858  cbi PORTD, HEATER                    ;turn off heater and light
+   212: 0003A3   985F  cbi PORTD, LIGHT
+   213: 0003A4   E000  ldi r16, 0
+   214: 0003A5   BD07  out OCR0A, r16
+   215: 0003A6   91A0  lds	r26,seconds			; Get current cook time
+        0003A7   0105
+   216: 0003A8   91B0  lds	r27,seconds+1
+        0003A9   0106
+   217: 0003AA   9150  lds	r21,joyx
+        0003AB   0102
+   218: 0003AC   3857  cpi	r21,135				; Check for time increment
+   219: 0003AD   F438  brsh	de1
+   220: 0003AE   30B0  cpi	r27,0				; Check upper byte for 0
+   221: 0003AF   F411  brne	de0
+   222: 0003B0   30A0  cpi	r26,0				; Check lower byte for 0
+   223: 0003B1   F021  breq	de2
+   224: de0:
+   225: 0003B2   971A  sbiw	r27:r26,10			; Decrement cook time by 10 seconds
+   226: 0003B3   940C  jmp	de2
+        0003B4   03B6
+   227: de1:
+   228: 0003B5   961A  adiw	r27:r26,10			; Increment cook time by 10 seconds
+   229: de2:
+   230: 0003B6   93A0  sts	seconds,r26			; Store time
+        0003B7   0105
+   231: 0003B8   93B0  sts	seconds+1,r27
+        0003B9   0106
+   232: 0003BA   940E  call	displayState
+        0003BB   040C
+   233: 0003BC   940E  call	delay1s
+        0003BD   0158
+   234: 0003BE   940E  call	joystickInputs
+        0003BF   03ED
+   235: 0003C0   9150  lds	r21,joys
+        0003C1   0104
+   236: 0003C2   3050  cpi	r21,0
+   237: 0003C3   F2D9  breq	dataentry			; Do data entry until joystick centred
+   238: 0003C4   E084  ldi	r24,SUSPENDS
+   239: 0003C5   9380  sts	cstate,r24
+        0003C6   0100
+   240: 
+   241: 
+   242: 0003C7   940C  jmp	loop
+        0003C8   034A
+   243: 
+   244: 
+   245: 
+   246: 
+   247: 
+   248: 
+   249: 
+   250: 
+   251: ; Time Tasks
+   252: updateTick:
+   253: 0003C9   940E  call	delay100ms
+        0003CA   0121
+   254: 0003CB   985D  cbi	PORTD,BEEPER	; Turn off beeper
+   255: 0003CC   9160  lds	r22,sec1		; Get minor tick time
+        0003CD   0107
+   256: 0003CE   306A  cpi	r22,10			; 10 delays of 100 ms done?
+   257: 0003CF   F4B9  brne	ut2
+   258: 0003D0   E060  ldi	r22,0			; Reset minor tick
+   259: 0003D1   9360  sts	sec1,r22		; Do 1 second interval tasks
+        0003D2   0107
+   260: 
+   261: 0003D3   9170  lds	r23,cstate		; Get current state
+        0003D4   0100
+   262: 0003D5   3073  cpi	r23,COOKS
+   263: 0003D6   F471  brne	ut1
+   264: 0003D7   91A0  lds	r26,seconds		; Get current cook time
+        0003D8   0105
+   265: 0003D9   91B0  lds	r27,seconds+1
+        0003DA   0106
+   266: 0003DB   95A3  inc	r26
+   267: 0003DC   9711  sbiw	r27:r26,1		; Decrement cook time by 1 second
+   268: 0003DD   F411  brne	ut3
+   269: 0003DE   940C  jmp	idle
+        0003DF   037C
+   270: 0003E0   9711  sbiw	r27:r26,1		; Decrement/store cook time
+   271: 0003E1   93A0  sts	seconds,r26
+        0003E2   0105
+   272: 0003E3   93B0  sts	seconds+1,r27
+        0003E4   0106
+   273: 0003E5   940E  call	displayState
+        0003E6   040C
+   274: 0003E7   9160  lds	r22,sec1
+        0003E8   0107
+   275: 0003E9   9563  inc	r22
+   276: 0003EA   9360  sts	sec1,r22
+        0003EB   0107
+   277: 0003EC   9508  ret
+   278: 
+   279: 
+   280: 
+   281: 
+   282: 
+   283: 
+   284: 
+   285: 
+   286: 
+   287: 
+   288: ; Save Most Significant 8 bits of Joystick X,Y
+   289: ; To the global variables joyx and joyy
+   290: ; Set joys if the joystick is centred.
+   291: joystickInputs:
+   292: 0003ED   E080  ldi	r24,0x00		; Read ch 0 Joystick Y
+   293: 0003EE   940E  call	readADCch
+        0003EF   01D8
+   294: 0003F0   9592  swap	r25
+   295: 0003F1   0F99  lsl	r25
+   296: 0003F2   0F99  lsl	r25
+   297: 0003F3   9586  lsr	r24
+   298: 0003F4   9586  lsr	r24
+   299: 0003F5   2B89  or	r24,r25
+   300: 0003F6   9380  sts	joyy,r24
+        0003F7   0103
+   301: 0003F8   E081  ldi	r24,0x01		; Read ch 1 Joystick X
+   302: 0003F9   940E  call	readADCch
+        0003FA   01D8
+   303: 0003FB   9592  swap	r25
+   304: 0003FC   0F99  lsl	r25
+   305: 0003FD   0F99  lsl	r25
+   306: 0003FE   9586  lsr	r24
+   307: 0003FF   9586  lsr	r24
+   308: 000400   2B89  or	r24,r25
+   309: 000401   9380  sts	joyx,r24
+        000402   0102
+   310: 000403   E090  ldi	r25,0			; Not centred
+   311: 000404   3783  cpi	r24,115
+   312: 000405   F018  brlo	ncx
+   313: 000406   3887  cpi	r24,135
+   314: 000407   F408  brsh	ncx
+   315: 000408   E091  ldi	r25,1			; Centred
+   316: ncx:
+   317: 000409   9390  sts	joys,r25
+        00040A   0104
+   318: 00040B   9508  ret
+   319: 
+   320: 
+   321: 
+   322: 
+   323: displayState:
+   324: 00040C   940E  call newline
+        00040D   01A2
+   325: 00040E   EFEC  ldi zl,low(cmsg1<<1)
+   326: 00040F   E0F1  ldi zh,high(cmsg1<<1)
+   327: 000410   E001  ldi r16,1
+   328: 000411   940E  call putsUSART0
+        000412   01A9
+   329: 
+   330: 
+   331: 000413   940E  call DisplayTOD
+        000414   0443
+   332: 
+   333: 000415   E0E4  ldi zl,low(cmsg2<<1)
+   334: 000416   E0F2  ldi zh,high(cmsg2<<1)
+   335: 000417   E001  ldi r16,1
+   336: 000418   940E  call putsUSART0
+        000419   01A9
+   337: 
+   338: 
+   339: 00041A   940E  call displayCookTime
+        00041B   0496
+   340: 
+   341: 
+   342: 
+   343: 00041C   E1E2  ldi zl,low(cmsg3<<1)
+   344: 00041D   E0F2  ldi zh,high(cmsg3<<1)
+   345: 00041E   E001  ldi r16,1
+   346: 00041F   940E  call putsUSART0
+        000420   01A9
+   347: 
+   348: 
+   349: 000421   9100  lds r16,cstate
+        000422   0100
+   350: 000423   6300  ori r16,0x30
+   351: 000424   940E  call putchUSART0
+        000425   0194
+   352: 
+   353: 000426   EEEC  ldi zl,low(joymsg<<1)
+   354: 000427   E0F1  ldi zh,high(joymsg<<1)
+   355: 000428   E001  ldi r16,1
+   356: 000429   940E  call putsUSART0
+        00042A   01A9
+   357: 
+   358: 
+   359: 00042B   9110  lds    r17,joyx                  ;x value
+        00042C   0102
+   360: 00042D   940E  call    byteToHexASCII
+        00042E   0131
+   361: 00042F   2F01  mov    r16,r17
+   362: 000430   940E  call    putchUSART0
+        000431   0194
+   363: 000432   2F02  mov    r16,r18
+   364: 000433   940E  call    putchUSART0
+        000434   0194
+   365: 
+   366: 
+   367: 000435   E30A  ldi    r16,0x3A          ; put in the ":"
+   368: 000436   940E  call    putchUSART0
+        000437   0194
+   369: 
+   370: 
+   371: 000438   9110  lds    r17,joyy                  ;y value
+        000439   0103
+   372: 00043A   940E  call    byteToHexASCII
+        00043B   0131
+   373: 00043C   2F01  mov    r16,r17
+   374: 00043D   940E  call    putchUSART0
+        00043E   0194
+   375: 00043F   2F02  mov    r16,r18
+   376: 000440   940E  call    putchUSART0
+        000441   0194
+   377: 
+   378: 
+   379: 
+   380: 
+   381: 
+   382: 000442   9508  ret
+   383: 
+   384: 
+   385: DisplayTOD:
+   386: 000443   E092  ldi		r25,HOURS_REGISTER
+   387: 000444   940E  call	ds1307GetDateTime
+        000445   027F
+   388: 000446   2F18  mov		r17,r24
+   389:                    ;code for clock
+   390: 000447   940E  call    pBCDtoASCII
+        000448   012A
+   391: 000449   2F01  mov    r16,r17
+   392: 00044A   940E  call    putchUSART0
+        00044B   0194
+   393: 00044C   2F02  mov    r16,r18
+   394: 00044D   940E  call    putchUSART0
+        00044E   0194
+   395: 
+   396: 
+   397: 
+   398: 00044F   E30A  ldi    r16,0x3A                               ; ":"
+   399: 000450   940E  call    putchUSART0
+        000451   0194
+   400: 
+   401: 000452   E091  ldi		r25,MINUTES_REGISTER
+   402: 000453   940E  call	ds1307GetDateTime
+        000454   027F
+   403: 000455   2F18  mov		r17,r24
+   404:                    ;code for clock
+   405: 000456   940E  call    pBCDtoASCII
+        000457   012A
+   406: 000458   2F01  mov    r16,r17
+   407: 000459   940E  call    putchUSART0
+        00045A   0194
+   408: 00045B   2F02  mov    r16,r18
+   409: 00045C   940E  call    putchUSART0
+        00045D   0194
+   410: 
+   411: 
+   412: 
+   413: 
+   414: 
+   415: 00045E   E30A  ldi    r16,0x3A                               ; ":"
+   416: 00045F   940E  call    putchUSART0
+        000460   0194
+   417: 
+   418: 
+   419: 
+   420: 000461   E090  ldi		r25,SECONDS_REGISTER
+   421: 000462   940E  call	ds1307GetDateTime
+        000463   027F
+   422: 000464   2F18  mov		r17,r24
+   423: 
+   424: 000465   940E  call    pBCDtoASCII
+        000466   012A
+   425: 000467   2F01  mov    r16,r17
+   426: 000468   940E  call    putchUSART0
+        000469   0194
+   427: 00046A   2F02  mov    r16,r18
+   428: 00046B   940E  call    putchUSART0
+        00046C   0194
+   429: 
+   430: 00046D   9100  lds r16, cstate
+        00046E   0100
+   431: 00046F   3001  cpi r16, IDLES
+   432: 000470   F031  breq alpha                    ;where to go next
+   433: 000471   3003  cpi r16, COOKS
+   434: 000472   F111  breq finish
+   435: 000473   3004  cpi r16, SUSPENDS
+   436: 000474   F101  breq finish
+   437: 000475   3002  cpi r16, DATAS
+   438: 000476   F0F1  breq finish
+   439: 
+   440:  alpha:
+   441:                              ;alphanumeric stuff
+   442: 000477   E092  ldi		r25,HOURS_REGISTER
+   443: 000478   940E  call	ds1307GetDateTime
+        000479   027F
+   444: 00047A   2F18  mov		r17,r24
+   445: 00047B   940E  call    pBCDtoASCII
+        00047C   012A
+   446: 00047D   2F92  mov r25,r18
+   447: 00047E   2F01  mov r16, r17
+   448: 00047F   E010  ldi r17, 0
+   449: 000480   940E  call   anWriteDigit
+        000481   02BF
+   450: 
+   451: 000482   2F09  mov r16, r25
+   452: 000483   E011  ldi r17, 1
+   453: 000484   940E  call   anWriteDigit
+        000485   02BF
+   454: 
+   455: 
+   456: 
+   457: 000486   E091  ldi		r25,MINUTES_REGISTER
+   458: 000487   940E  call	ds1307GetDateTime
+        000488   027F
+   459: 000489   2F18  mov		r17,r24
+   460: 00048A   940E  call    pBCDtoASCII
+        00048B   012A
+   461: 00048C   2F92  mov r25,r18
+   462: 00048D   2F01  mov r16, r17
+   463: 00048E   E012  ldi r17, 2
+   464: 00048F   940E  call   anWriteDigit
+        000490   02BF
+   465: 
+   466: 000491   2F09  mov r16, r25
+   467: 000492   E013  ldi r17, 3
+   468: 000493   940E  call   anWriteDigit
+        000494   02BF
+   469: 
+   470: 
+   471:     finish:
+   472: 
+   473: 
+   474: 000495   9508  ret
+   475: 
+   476:   displayCookTime:
+   477:            ;serial io
+   478: 000496   9100  lds r16, seconds
+        000497   0105
+   479: 000498   9110  lds r17, seconds+1
+        000499   0106
+   480: 00049A   940E  call itoa_short
+        00049B   0140
+   481: 
+   482: 00049C   E000  ldi r16, 0
+   483: 00049D   9300  sts tascii+5, r16
+        00049E   010D
+   484: 00049F   9300  sts tascii+6, r16
+        0004A0   010E
+   485: 0004A1   9300  sts tascii+7, r16
+        0004A2   010F
+   486: 0004A3   E0E8  ldi zl, low(tascii)
+   487: 0004A4   E0F1  ldi zh, high(tascii)
+   488: 0004A5   940E  call putsUSART0
+        0004A6   01A9
+   489: 
+   490: 0004A7   9100  lds r16, cstate
+        0004A8   0100
+   491: 0004A9   3000  cpi r16, STARTS
+   492: 0004AA   F171  breq finish2
+   493: 0004AB   3001  cpi r16, IDLES
+   494: 0004AC   F161  breq finish2                    ;where to go next
+   495: 0004AD   3003  cpi r16, COOKS
+   496: 0004AE   F021  breq aalpha
+   497: 0004AF   3004  cpi r16, SUSPENDS
+   498: 0004B0   F011  breq aalpha
+   499: 0004B1   3002  cpi r16, DATAS
+   500: 0004B2   F001  breq aalpha
+   501: 
+   502: 
+   503: 
+   504: 
+   505: 
+   506:   aalpha:            ;alphanumeric
+   507: 0004B3   9100  lds	r16,seconds		; Get current timer seconds
+        0004B4   0105
+   508: 0004B5   9110  lds	r17,seconds+1
+        0004B6   0106
+   509: 0004B7   E32C  ldi	r18,60			; 16-bit Divide by 60 seconds to get mm:ss
+   510: 0004B8   E030  ldi	r19,0			; answer = mm, remainder = ss
+   511: 0004B9   940E  call	div1616
+        0004BA   0164
+   512: 0004BB   2C40  mov	r4,r0			; Save mm in r4
+   513: 0004BC   2C52  mov	r5,r2			; Save ss in r5
+   514: 0004BD   2D04  mov	r16,r4			; Divide minutes by 10
+   515: 0004BE   E02A  ldi	r18,10
+   516: 0004BF   940E  call	div88
+        0004C0   0178
+   517: 0004C1   E300  ldi	r16,'0'			; Convert to ASCII
+   518: 0004C2   0D00  add	r16,r0			; Division answer is 10's minutes
+   519: 0004C3   E010  ldi	r17,0
+   520: 0004C4   940E  call	anWriteDigit	; Write 10's minutes digit
+        0004C5   02BF
+   521: 0004C6   E300  ldi	r16,'0'			; Convert ASCII
+   522: 0004C7   0D02  add	r16,r2			; Division remainder is 1's minutes
+   523: 0004C8   E011  ldi	r17,1
+   524: 0004C9   940E  call	anWriteDigit	; Write 1's minutes digit
+        0004CA   02BF
+   525: 0004CB   2D05  mov	r16,r5			; Divide seconds by 10
+   526: 0004CC   E02A  ldi	r18,10
+   527: 0004CD   940E  call	div88
+        0004CE   0178
+   528: 0004CF   E300  ldi	r16,'0'			; Convert to ASCII
+   529: 0004D0   0D00  add	r16,r0			; Division answer is 10's seconds
+   530: 0004D1   E012  ldi	r17,2
+   531: 0004D2   940E  call	anWriteDigit	; Write 10's seconds digit
+        0004D3   02BF
+   532: 0004D4   E300  ldi	r16,'0'			; Convert to ASCII
+   533: 0004D5   0D02  add	r16,r2			; Division remainder is 1's seconds
+   534: 0004D6   E013  ldi	r17,3
+   535: 0004D7   940E  call	anWriteDigit	; Write 1's seconds digit
+        0004D8   02BF
+   536: 
+   537:   finish2:
+   538: 0004D9   9508  ret
+   539: 
+
+List of symbols:
+Type nDef nUsed             Decimalval           Hexval Name
+  T     1     1                    171               AB ATMEGA328P
+  L     1    11                    256             0100 CSTATE
+  L     1     0                    257             0101 INPUTS
+  L     1     3                    258             0102 JOYX
+  L     1     2                    259             0103 JOYY
+  L     1     2                    260             0104 JOYS
+  L     1    16                    261             0105 SECONDS
+  L     1     5                    263             0107 SEC1
+  L     1     7                    264             0108 TASCII
+  L     1     2                    246               F6 JOYMSG
+  L     1     2                    254               FE CMSG1
+  L     1     2                    258             0102 CMSG2
+  L     1     2                    265             0109 CMSG3
+  L     1     1                    270             010E INITPORTS
+  L     1     2                    289             0121 DELAY100MS
+  L     1     2                    292             0124 D100
+  L     1     5                    298             012A PBCDTOASCII
+  L     1     2                    305             0131 BYTETOHEXASCII
+  L     1     2                    311             0137 B1
+  L     1     2                    318             013E B2
+  L     1     1                    320             0140 ITOA_SHORT
+  L     1     2                    324             0144 ITOA_LEXT
+  L     1     2                    327             0147 ITOA_LINT
+  L     1     2                    338             0152 DECTAB
+  L     1     1                    344             0158 DELAY1S
+  L     1     2                    345             0159 D1
+  L     1     2                    346             015A D2
+  L     1     2                    347             015B D3
+  L     1     1                    356             0164 DIV1616
+  L     1     4                    360             0168 DLOOP
+  L     1     2                    373             0175 SKIP
+  L     1     2                    375             0177 DDONE
+  L     1     2                    376             0178 DIV88
+  L     1     4                    379             017B LOOPD8
+  L     1     2                    388             0184 SKIPD8
+  L     1     2                    390             0186 DONED8
+  L     1     1                    391             0187 INITUSART0
+  L     1    25                    404             0194 PUTCHUSART0
+  L     1     3                    411             019B GETCHUSART0
+  L     1     1                    418             01A2 NEWLINE
+  L     1     5                    425             01A9 PUTSUSART0
+  L     1     2                    427             01AB DSTR
+  L     1     4                    432             01B0 PSTR
+  L     1     4                    437             01B5 DONE
+  L     1     0                    438             01B6 GETSUSART0
+  L     1     4                    438             01B6 RAGAIN
+  L     1     2                    445             01BD CONT
+  L     1     2                    460             01CC NOTBS
+  L     1     1                    465             01D1 INITADC
+  L     1     2                    472             01D8 READADCCH
+  L     1     1                    484             01E4 POLL
+  L     1     1                    493             01ED INITI2C
+  L     1     1                    503             01F7 I2CDETECT
+  L     1     2                    508             01FC DT1
+  L     1     2                    518             0206 DT2
+  L     1     2                    528             0210 DT3
+  L     1     9                    529             0211 I2CSTART
+  L     1     7                    532             0214 I2CSTOP
+  L     1     0                    536             0218 I2CREAD
+  L     1     2                    539             021B WAIT2
+  L     1     0                    546             0222 I2CREADACK
+  L     1     2                    551             0227 RA1
+  L     1     1                    557             022D I2CREADNACK
+  L     1     2                    562             0232 RN1
+  L     1    11                    568             0238 I2CWRITE
+  L     1     2                    575             023F WR1
+  L     1     2                    584             0248 WR2
+  L     1     5                    585             0249 I2CWRITEREGISTER
+  L     1     1                    596             0254 I2CREADREGISTER
+  L     1     0                    613             0265 I2CWRITEMULTI
+  L     1     2                    620             026C WM2
+  L     1     2                    627             0273 WM1
+  L     1     1                    630             0276 INITDS1307
+  L     1     5                    639             027F DS1307GETDATETIME
+  L     1     1                    643             0283 SETDS1307
+  L     1     1                    664             0298 INITAN
+  L     1    12                    703             02BF ANWRITEDIGIT
+  L     1     2                    728             02D8 ALPHATABLE
+  L     1     1                    824             0338 START
+  L     1    10                    842             034A LOOP
+  L     1     1                    866             0362 JOY0
+  L     1     1                    874             036A STARTSTATE
+  L     1     2                    892             037C IDLE
+  L     1     6                    909             038D COOK
+  L     1     3                    918             0396 SUSPEND
+  L     1     3                    927             039F DATAENTRY
+  L     1     2                    946             03B2 DE0
+  L     1     2                    949             03B5 DE1
+  L     1     3                    950             03B6 DE2
+  L     1     1                    969             03C9 UPDATETICK
+  L     1     2                    992             03E0 UT3
+  L     1     2                    997             03E5 UT1
+  L     1     2                    999             03E7 UT2
+  L     1     2                   1005             03ED JOYSTICKINPUTS
+  L     1     4                   1033             0409 NCX
+  L     1     2                   1036             040C DISPLAYSTATE
+  L     1     1                   1091             0443 DISPLAYTOD
+  L     1     2                   1143             0477 ALPHA
+  L     1     6                   1173             0495 FINISH
+  L     1     1                   1174             0496 DISPLAYCOOKTIME
+  L     1     6                   1203             04B3 AALPHA
+  L     1     4                   1241             04D9 FINISH2
+  R     1     2                      0               00 ANSL
+  R     1     2                      1               01 ANSH
+  R     1     5                      2               02 REML
+  R     1     4                      3               03 REMH
+  R     1     1                     16               10 AL
+  R     1     1                     17               11 AH
+  R     1     2                     18               12 BL
+  R     1     2                     19               13 BH
+  R     1     2                     20               14 C16
+  C     1     0                     23               17 NOW_Y
+  C     1     0                     12               0C NOW_M
+  C     1     0                      4               04 NOW_D
+  C     1     0                  45264             B0D0 NOW_I
+  C     1     6                      7               07 LIGHT
+  C     1     0                      6               06 TTABLE
+  C     1     2                      5               05 BEEPER
+  C     1     1                      4               04 CANCEL
+  C     1     1                      3               03 DOOR
+  C     1     1                      2               02 STSP
+  C     1     5                      0               00 HEATER
+  C     1     0                      0               00 CLOSED
+  C     1     0                      1               01 OPEN
+  C     1     0                      1               01 ON
+  C     1     0                      0               00 OFF
+  C     1     0                      1               01 YES
+  C     1     0                      0               00 NO
+  C     1     0                    125               7D JCTR
+  C     1     3                      0               00 STARTS
+  C     1     4                      1               01 IDLES
+  C     1     3                      2               02 DATAS
+  C     1     6                      3               03 COOKS
+  C     1     5                      4               04 SUSPENDS
+  C     1     1                     13               0D ENTER
+  C     1     0                 100000           0186A0 F_SCL
+  C     1     1                    164               A4 TWISTART
+  C     1     1                    148               94 TWISTOP
+  C     1     1                    196               C4 TWIACK
+  C     1     1                    132               84 TWINACK
+  C     1     2                    132               84 TWISEND
+  C     1     0                    128               80 TWIREADY
+  C     1     1                    184               B8 TWISTATUS
+  C     1     7                    208               D0 RTCADR
+  C     1     2                      0               00 SECONDS_REGISTER
+  C     1     3                      1               01 MINUTES_REGISTER
+  C     1     3                      2               02 HOURS_REGISTER
+  C     1     0                      3               03 DAYOFWK_REGISTER
+  C     1     0                      4               04 DAYS_REGISTER
+  C     1     0                      5               05 MONTHS_REGISTER
+  C     1     0                      6               06 YEARS_REGISTER
+  C     1     2                      7               07 CONTROL_REGISTER
+  C     1     0                      8               08 RAM_BEGIN
+  C     1     0                     63               3F RAM_END
+  C     1     2                    224               E0 ANI2CADR
+  C     1     1                     33               21 ANON
+  C     1     0                     32               20 ANSTANDBY
+  C     1     1                    129               81 ANDISPON
+  C     1     0                    128               80 ANDISPOFF
+  C     1     0                    133               85 ANBLINKON
+  C     1     0                    129               81 ANBLINKOFF
+  C     1     1                    229               E5 ANDIM
+  C     1     0                    128               80 ANBLINKCMD
+  C     1     0                      1               01 ANBLINKDISPON
+  C     1     0                      0               00 ANBLINKROFF
+  C     1     0                      1               01 ANBLINK2HZ
+  C     1     0                      2               02 ANBLINK1HZ
+  C     1     0                      3               03 ANBLINKHHZ
+  C     1     0                    224               E0 ANBRIGHTCMD
+   No macros.
+
+Program             :      872 words.
+Constants           :      126 words.
+Total program memory:      998 words.
+Eeprom space        :        0 bytes.
+Data segment        :       16 bytes.
+Compilation completed, no errors.
+Compilation ended 04.12.2023, 18:04:34
