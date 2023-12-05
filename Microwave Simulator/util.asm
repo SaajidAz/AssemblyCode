@@ -1,8 +1,7 @@
 ;
 ; util.asm
 ;
-;  Created: 8/1/2017 12:09:45 PM
-;   Author: pmoggach
+;   Author: Saajid Aziz
 ;
 .def ANSL = R0		;To hold low-byte of answer
 .def ANSH = R1		;To hold high-byte of answer
